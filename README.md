@@ -12,7 +12,7 @@ dependencies:
     github: stakach/tuya-client
 ```
 
-Run `shards install` with Git credentials that have access to the repository.
+Run `shards install`.
 
 ## Usage
 
