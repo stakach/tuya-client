@@ -1,4 +1,4 @@
-name: tuya-client
+name: tuya_client
 version: 0.1.0
 crystal: ">= 1.22.0"
 license: MIT

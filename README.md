@@ -8,11 +8,11 @@ Requires Crystal 1.22 or newer and OpenSSL with AES support.
 
 ```yaml
 dependencies:
-  tuya-client:
+  tuya_client:
     github: stakach/tuya-client
 ```
 
-Run `shards install`.
+Run `shards install` with Git credentials that have access to the repository.
 
 ## Usage
 
