@@ -37,7 +37,7 @@ end
 
 Datapoint IDs and value types depend on the device. Set `on_datapoint:` to use a switch datapoint other than 1. For `device22` firmware, use `query_datapoints: [1, 5]` to request specific IDs. Protocol 3.2 uses this query format with ID 1 by default.
 
-The client opens a TCP connection on the first command and reuses it until `close` or a connection failure. Use `ping` for a heartbeat. Use `receive_update` to wait for a device report and `refresh([18, 19, 20])` to request a report for selected datapoints. Calls on the same client are serialized. Writes can raise `Tuya::DeviceError` with the device return code or `Tuya::ConnectionError` if the connection fails. A write is sent once, so a failure while awaiting the acknowledgement leaves its outcome uncertain.
+The client connects on the first command and reopens the connection when the device hangs up. Status reads and heartbeats retry once if a reused connection drops during the request. Use `ping` for a heartbeat. Use `receive_update` to wait for a device report and `refresh([18, 19, 20])` to request a report for selected datapoints. Calls on the same client are serialized. Writes can raise `Tuya::DeviceError` with the device return code or `Tuya::ConnectionError` if the connection fails. A write is sent once, so a failure while awaiting the acknowledgement leaves its outcome uncertain.
 
 ## Discovery
 

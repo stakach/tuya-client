@@ -37,22 +37,29 @@ module Tuya
     end
 
     def connected? : Bool
-      @mutex.synchronize { @socket.try(&.closed?) == false }
+      @mutex.synchronize do
+        socket = @socket
+        !!(socket && socket_open?(socket))
+      end
     end
 
     def close : Nil
-      @mutex.synchronize { disconnect }
+      @mutex.synchronize do
+        @updates.clear
+        disconnect
+      end
     end
 
     # Requests the current datapoints. Keys are Tuya datapoint IDs as strings.
     def status : Datapoints
-      with_connection do |socket, protocol|
+      with_connection(retry_on_disconnect: true) do |socket, protocol|
         command, body = status_request
         response = request_status(socket, protocol, command, body)
         if response.payload == "json obj data unvalid".to_slice &&
            @query_datapoints.nil? && (@version.v33? || @version.v34?)
           @query_datapoints = [1]
           command, body = status_request
+          socket, protocol, _ = connection
           response = request_status(socket, protocol, command, body)
         end
         datapoints = extract_datapoints(response.payload)
@@ -105,7 +112,7 @@ module Tuya
     # Sends a heartbeat and waits for the device to acknowledge it.
     def ping : Nil
       body = {gwId: @device_id, devId: @device_id}.to_json.to_slice
-      with_connection do |socket, protocol|
+      with_connection(retry_on_disconnect: true) do |socket, protocol|
         command = Protocol::Command::Heartbeat
         protocol.send(socket, command, body)
         check_code(wait_for(socket, protocol, command))
@@ -124,11 +131,13 @@ module Tuya
     # Waits for a device-initiated status update. Updates received during other
     # commands are coalesced by datapoint and returned on the next call.
     def receive_update : Datapoints
-      with_connection do |socket, protocol|
+      @mutex.synchronize do
         if @updates.empty?
-          deadline = Time.instant + @timeout
-          while @updates.empty?
-            collect_update(receive(socket, protocol, deadline))
+          exchange do |socket, protocol|
+            deadline = Time.instant + @timeout
+            while @updates.empty?
+              collect_update(receive(socket, protocol, deadline))
+            end
           end
         end
         result = @updates
@@ -205,22 +214,35 @@ module Tuya
       raise DeviceError.new(response.code) unless response.code.zero?
     end
 
-    private def with_connection(&)
-      @mutex.synchronize do
-        socket, protocol = connection
-        yield socket, protocol
-      rescue ex : IO::Error | Socket::Error
-        disconnect
-        raise ConnectionError.new("Tuya connection to #{@host}:#{@port} failed: #{ex.message}", cause: ex)
-      rescue ex : ProtocolError
-        disconnect
-        raise ex
-      end
+    private def with_connection(*, retry_on_disconnect : Bool = false, &block : TCPSocket, Protocol -> T) : T forall T
+      @mutex.synchronize { exchange(retry_on_disconnect: retry_on_disconnect, &block) }
     end
 
-    private def connection : {TCPSocket, Protocol}
+    private def exchange(*, retry_on_disconnect : Bool = false, &)
+      socket, protocol, reused = connection
+      begin
+        yield socket, protocol
+      rescue ex : IO::Error
+        raise ex if !retry_on_disconnect || !reused || ex.is_a?(IO::TimeoutError)
+
+        # Only read-only operations can replay when a reply was lost.
+        disconnect
+        socket, protocol, _ = connection
+        yield socket, protocol
+      end
+    rescue ex : IO::Error
+      disconnect
+      raise ConnectionError.new("Tuya connection to #{@host}:#{@port} failed: #{ex.message}", cause: ex)
+    rescue ex : ProtocolError
+      disconnect
+      raise ex
+    end
+
+    private def connection : {TCPSocket, Protocol, Bool}
       if (socket = @socket) && (protocol = @protocol)
-        return {socket, protocol}
+        return {socket, protocol, true} if socket_open?(socket)
+
+        disconnect
       end
 
       @socket = socket = TCPSocket.new(@host, @port, dns_timeout: @timeout, connect_timeout: @timeout)
@@ -231,13 +253,28 @@ module Tuya
       protocol = Protocol.new(@version, @local_key)
       protocol.negotiate(socket) if @version.session?
       @protocol = protocol
-      {socket, protocol}
+      {socket, protocol, false}
+    end
+
+    # Peek through Crystal's read buffer so queued reports stay available.
+    # A zero timeout distinguishes an idle socket from EOF without waiting.
+    private def socket_open?(socket : TCPSocket) : Bool
+      timeout = socket.read_timeout
+      return false if socket.closed?
+
+      socket.read_timeout = Time::Span.zero
+      !socket.peek.empty?
+    rescue IO::TimeoutError
+      true
+    rescue IO::Error
+      false
+    ensure
+      socket.read_timeout = timeout
     end
 
     private def disconnect : Nil
       socket, @socket = @socket, nil
       @protocol = nil
-      @updates.clear
       socket.try(&.close)
     end
   end
